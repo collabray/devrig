@@ -32,7 +32,7 @@ run can be resumed with the other backend. Software mode is plain automation: ap
 input from a physical keyboard, and it cannot type into elevated (admin) windows from a non-admin console.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\setup_windows.ps1 -AutoInstall -SoftwareOnly -RunTests
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup_windows.ps1 -AutoInstall -RunTests
 python host\orchestrator.py https://github.com/OWNER/REPO C:\work\REPO-out            # software
 python host\orchestrator.py https://github.com/OWNER/REPO C:\work\REPO-out --backend android
 ```

@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Fake VS Code CLI: records which file is 'open'."""
+import os, sys
+a = sys.argv[1:]
+if "--goto" in a:
+    v = a[a.index("--goto") + 1]
+    path = v.rsplit(":", 2)[0]
+    open(os.environ["FAKEROOT"] + "/vscode_current", "w").write(path)
+sys.exit(0)

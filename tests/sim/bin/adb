@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Fake adb: maps the 'device' filesystem into $FAKEROOT and runs shell commands locally."""
+import os, shutil, subprocess, sys
+R = os.environ["FAKEROOT"]
+a = sys.argv[1:]
+if a[:1] == ["-s"]:
+    a = a[2:]
+def fwd(s): return s.replace("/data/local/tmp/devrig", R + "/devrig").replace("/dev/hidg0", R + "/hidg0").replace("/sys/class/udc", R + "/udc")
+def rev(s): return s.replace(R + "/devrig", "/data/local/tmp/devrig").replace(R + "/hidg0", "/dev/hidg0").replace(R + "/udc", "/sys/class/udc")
+c = a[0] if a else ""
+if os.path.exists(R + "/disconnect"):
+    sys.stderr.write("error: no devices/emulators found\n"); sys.exit(1)
+if c == "start-server": sys.exit(0)
+if c == "devices": print("List of devices attached\nFAKE0001\tdevice\n"); sys.exit(0)
+if c in ("get-state",): print("device"); sys.exit(0)
+if c == "wait-for-device": sys.exit(0)
+if c == "push":
+    dst = fwd(a[2]); os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy(a[1], dst); print("1 file pushed"); sys.exit(0)
+if c == "shell":
+    cmd = fwd(a[1])
+    if "hid_typer.py serve" in cmd:
+        os.execvp("sh", ["sh", "-c", cmd])
+    cp = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
+    sys.stdout.write(rev(cp.stdout)); sys.stderr.write(rev(cp.stderr)); sys.exit(cp.returncode)
+sys.stderr.write("fake adb: unsupported %r\n" % a); sys.exit(1)

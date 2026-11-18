@@ -24,7 +24,7 @@ def make_repo(path):
     for c in (["init", "-q"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]):
         sh("git", "-C", path, *c)
 
-def main():
+def main(backend="android"):
     tmp = tempfile.mkdtemp(prefix="devrig_e2e_")
     fake = os.path.join(tmp, "fake"); os.makedirs(fake)
     repo = os.path.join(tmp, "upstream"); make_repo(repo)
@@ -37,7 +37,8 @@ def main():
     cmd = [sys.executable, os.path.join(ROOT, "host", "orchestrator.py"), "file://" + repo, ws,
            "--wpm", "2500", "--pause-min", "0.05", "--pause-max", "0.1", "--pause-mean-interval", "1",
            "--hold-ms", "4", "--timing-scale", "0.02", "--settle", "2", "--file-gap-min", "0", "--file-gap-max", "0.05",
-           "--typer-extra", "--allow-create --no-leds", "--android-python", "python3"]
+           "--typer-extra", "--allow-create --no-leds", "--android-python", "python3",
+           "--backend", backend, "--software-sink", os.path.join(fake, "hidg0")]
     try:
         # run 1: hard-kill part-way through
         p = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -65,11 +66,11 @@ def main():
             out = z.read("demo/" + rel)
             if rel == "docs/crlf.txt": src = src.replace(b"\r\n", b"\n")   # typed files are LF-normalised
             assert src == out, "content mismatch: " + rel
-        print("E2E PASS: %d files byte-identical (kill+resume, zip verified)" % len(exp))
+        print("E2E PASS [%s]: %d files byte-identical (kill+resume, zip verified)" % (backend, len(exp)))
     finally:
         open(os.path.join(fake, "consumer_stop"), "w").close(); time.sleep(0.2); cons.kill()
         subprocess.run(["pkill", "-f", "hid_type[r].py"])
         shutil.rmtree(tmp, ignore_errors=True)
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else "android")

@@ -1,7 +1,7 @@
 import json, os, sys, tempfile, unittest, zipfile
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(HERE)
 sys.path[:0] = [os.path.join(ROOT, "host"), os.path.join(ROOT, "android")]
-import hid_typer as H, state_manager as SM, packager as P, repo_planner as RP, orchestrator as O
+import backends as B, hid_typer as H, state_manager as SM, packager as P, repo_planner as RP, orchestrator as O
 
 class Scancodes(unittest.TestCase):
     def test_every_printable_roundtrips(self):
@@ -14,6 +14,23 @@ class Scancodes(unittest.TestCase):
         self.assertEqual(H.CHAR_MAP["\n"], (0, 0x28)); self.assertEqual(H.CHAR_MAP["0"], (0, 0x27))
     def test_untypeable(self):
         self.assertEqual(H.untypeable("a\u00e9b\x0c"), [(1, "\u00e9"), (3, "\x0c")])
+
+class SoftwareBackend(unittest.TestCase):
+    def test_every_mapped_key_has_a_windows_scancode(self):
+        for c, (m, k) in H.CHAR_MAP.items():
+            self.assertIn(k, B.SCAN_TABLE, c)
+    def test_report_diff_order(self):
+        z = H.ZERO_REPORT
+        ev = B.report_events(z, H.build_report(0x02))                       # shift down
+        self.assertEqual(ev, [(0x2A, False, True)])
+        ev = B.report_events(H.build_report(0x02), H.build_report(0x02, (0x04,)))   # + 'a'
+        self.assertEqual(ev, [(0x1E, False, True)])
+        ev = B.report_events(H.build_report(0x02, (0x04,)), z)               # all up: key first
+        self.assertEqual(ev, [(0x1E, False, False), (0x2A, False, False)])
+        ev = B.report_events(z, H.build_report(0x01, (0x4D,)))               # ctrl+End (extended)
+        self.assertEqual(ev, [(0x1D, False, True), (0x4F, True, True)])
+    def test_ctrl_s(self):
+        self.assertEqual(B.SCAN_TABLE[H.KEYCODES["s"]], (0x1F, False))
 
 class Pacing(unittest.TestCase):
     def test_pauses_in_range_and_poisson_rate(self):

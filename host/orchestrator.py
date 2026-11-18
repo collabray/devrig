@@ -32,6 +32,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT / "android"))
 
 import adb_bridge  # noqa: E402
+import backends  # noqa: E402
+import hid_typer  # noqa: E402
 import packager  # noqa: E402
 import repo_planner  # noqa: E402
 import state_manager  # noqa: E402
@@ -96,6 +98,7 @@ class Orchestrator(object):
         self._run_t0 = time.monotonic()
         self._typed_at_start = 0
         self.cfg = None
+        self.backend = args.backend
         self.pacing = {"wpm": args.wpm, "pause_min": args.pause_min, "pause_max": args.pause_max,
                        "pause_mean_interval": args.pause_mean_interval, "hold_ms": args.hold_ms}
 
@@ -122,8 +125,9 @@ class Orchestrator(object):
         if sys.version_info < (3, 8):
             raise FatalError("Python 3.8+ is required on the host (found %s)" % sys.version.split()[0])
         tools = {"git": a.git_path or shutil.which("git"),
-                 "code": a.code_path or shutil.which("code") or shutil.which("code.cmd"),
-                 "adb": a.adb_path or shutil.which("adb")}
+                 "code": a.code_path or shutil.which("code") or shutil.which("code.cmd")}
+        if self.backend == "android":
+            tools["adb"] = a.adb_path or shutil.which("adb")
         missing = [k for k, v in tools.items() if not v]
         if missing:
             raise FatalError("missing required CLI tool(s): %s. Run setup_windows.ps1 -AutoInstall "
@@ -146,7 +150,7 @@ class Orchestrator(object):
                 raise FatalError("--archive-dir must be outside the workspace")
             if self.ctrl == self.ws or self.ws in self.ctrl.parents:
                 raise FatalError("--state-dir must be outside the workspace")
-        self.adb = adb_bridge.Adb(tools["adb"], a.serial, self.log)
+        self.adb = adb_bridge.Adb(tools["adb"], a.serial, self.log) if self.backend == "android" else None
         self.vscode = vscode_env.VSCode(tools["code"], self.ctrl / "vscode-user",
                                         self.ws or Path.cwd(), self.log) if self.ws else None
 
@@ -220,6 +224,8 @@ class Orchestrator(object):
 
     # ----------------------------------------------------------------- rig --
     def connect_rig(self):
+        if self.backend == "software":
+            return self._start_local_session()
         a = self.adb
         a.start_server()
         a.select_device()
@@ -238,6 +244,23 @@ class Orchestrator(object):
         a.su("pkill -f 'hid_type[r].py'; true", check=False)
         self._ensure_gadget()
         self._start_session()
+
+    def _start_local_session(self):
+        if self.session:
+            self.session.close()
+        if self.args.software_sink:                       # test/diagnostic: raw reports to a file
+            dev = hid_typer.HidDevice(self.args.software_sink, 5.0, lambda o: None,
+                                      lambda: False, create=True, leds=False)
+        else:
+            try:
+                dev = backends.WindowsSendInputDevice()
+            except RuntimeError as exc:
+                raise FatalError(str(exc))
+        self.session = backends.LocalSession(self.pacing, dev, self.log)
+        ev = self.session.start()
+        self.log.info("software backend ready (Windows SendInput scancodes; no hardware)")
+        if self.state:
+            self.state.set_rig(backend="software", daemon_version=ev.get("version"))
 
     def _push_files(self):
         a = self.adb
@@ -321,8 +344,9 @@ class Orchestrator(object):
                     continue
                 raise FatalError("typing daemon refused to start: %s" % exc)
         self.log.info("typing daemon ready (v%s, python %s)", ev.get("version"), ev.get("python"))
-        self.state.set_rig(serial=self.adb.serial, python=py, hid_device=self.args.hid_device,
-                           daemon_version=ev.get("version"))
+        if self.state:
+            self.state.set_rig(backend="android", serial=self.adb.serial, python=py,
+                               hid_device=self.args.hid_device, daemon_version=ev.get("version"))
 
     def close_session(self):
         if self.session:
@@ -671,6 +695,8 @@ class Orchestrator(object):
                 delay = min(2 ** min(failures, 5), 30)
                 self.log.info("reconnecting in %ds ...", delay)
                 time.sleep(delay * max(self.scale, 0.1))
+                if self.adb is None:
+                    continue
                 try:
                     self.adb.wait_for_device(timeout=self.args.reconnect_timeout)
                 except adb_bridge.AdbUnauthorized as e2:
@@ -700,6 +726,9 @@ class Orchestrator(object):
         return 0
 
     def cmd_teardown(self):
+        if self.adb is None:
+            print("--teardown-gadget only applies to --backend android")
+            return 2
         self.adb.start_server()
         self.adb.select_device()
         if not self.adb.has_root():
@@ -721,7 +750,7 @@ class Orchestrator(object):
 
     def cmd_check(self):
         self.connect_rig()
-        self.log.info("rig check passed: root OK, python OK, HID gadget enumerated, daemon alive")
+        self.log.info("rig check passed (%s backend)", self.backend)
         ev = self.session.request({"cmd": "status"}, timeout=10)
         self.log.info("daemon status: %s", {k: v for k, v in ev.items() if k not in ("event", "id")})
         self.close_session()
@@ -736,7 +765,14 @@ def build_parser():
     p.add_argument("repo_url", nargs="?", help="GitHub repository URL")
     p.add_argument("workspace", nargs="?", help="local workspace directory to build in")
     p.add_argument("--branch")
-    g = p.add_argument_group("tools and rig")
+    g = p.add_argument_group("input backend")
+    g.add_argument("--backend", choices=("software", "android"),
+                   default=os.environ.get("DEVRIG_BACKEND", "software"),
+                   help="software = this PC injects the keystrokes (Windows, no hardware); "
+                        "android = physical USB keyboard through the rooted board "
+                        "(default: $DEVRIG_BACKEND or 'software')")
+    g.add_argument("--software-sink", help=argparse.SUPPRESS)
+    g = p.add_argument_group("tools and rig (android backend)")
     g.add_argument("--serial", help="adb serial (needed when several devices are attached)")
     g.add_argument("--adb-path")
     g.add_argument("--code-path")
@@ -797,6 +833,8 @@ def main(argv=None):
         print("error: repo_url and workspace are required", file=sys.stderr)
         return 2
     orch = Orchestrator(args)
+    if args.teardown_gadget:
+        orch.backend = args.backend = "android"
     orch._setup_logging()
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:

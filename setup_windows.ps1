@@ -4,6 +4,7 @@
   Android board, creates the USB HID gadget and verifies that Windows sees the keyboard.
 
 .PARAMETER AutoInstall   Install missing Git / VS Code / Python / adb with winget.
+.PARAMETER SoftwareOnly  No hardware: only check/install the PC tools (use with --backend software).
 .PARAMETER Serial        adb serial when more than one device is attached.
 .PARAMETER SkipGadget    Do not (re)configure the USB gadget (push + checks only).
 .PARAMETER ForceGadget   Re-run gadget setup even if /dev/hidg0 already exists.
@@ -16,6 +17,7 @@
 [CmdletBinding()]
 param(
     [switch]$AutoInstall,
+    [switch]$SoftwareOnly,
     [string]$Serial = "",
     [switch]$SkipGadget,
     [switch]$ForceGadget,
@@ -80,8 +82,10 @@ if (Have "git") { Ok ("git: " + (& git --version)) } else { Die "git not found (
 if (-not (Have "code")) { if ($AutoInstall) { Winget-Install "Microsoft.VisualStudioCode" "Visual Studio Code" } }
 if (Have "code") { Ok "VS Code CLI ('code') found" } else { Die "VS Code CLI 'code' not on PATH (reinstall VS Code with 'Add to PATH' enabled)." }
 
-if (-not (Have "adb")) { if ($AutoInstall) { Winget-Install "Google.PlatformTools" "Android platform-tools (adb)" } }
-if (Have "adb") { Ok ("adb: " + ((& adb version | Select-Object -First 1))) } else { Die "adb not found (use -AutoInstall)." }
+if (-not $SoftwareOnly) {
+    if (-not (Have "adb")) { if ($AutoInstall) { Winget-Install "Google.PlatformTools" "Android platform-tools (adb)" } }
+    if (Have "adb") { Ok ("adb: " + ((& adb version | Select-Object -First 1))) } else { Die "adb not found (use -AutoInstall)." }
+}
 
 # keyboard layout (HID scancodes assume US QWERTY)
 try {
@@ -90,6 +94,7 @@ try {
     else { Warn "primary input method is '$($tips -join ',')'. Switch to English (US) before typing, or the characters will be wrong." }
 } catch { Warn "could not read the input language list" }
 
+if ($SoftwareOnly) { Warn "software-only mode: skipping the Android board steps" } else {
 # 2. Device -------------------------------------------------------------------------------------
 Step "Looking for the Android development board"
 & adb start-server | Out-Null
@@ -159,13 +164,16 @@ if (-not $SkipGadget) {
     } catch { Warn "Get-PnpDevice unavailable; skipping Windows-side device check." }
 } else { Warn "gadget setup skipped (-SkipGadget)" }
 
+}   # end of Android-board steps
+
 # 6. Host self-tests ------------------------------------------------------------------------------
 if ($RunTests) {
     Step "Running host-side tests"
     $pyArgs = if ($py -eq "py") { @("-3") } else { @() }
     & $py @pyArgs "$Root\tests\test_core.py"
     if ($LASTEXITCODE -eq 0) { Ok "unit tests passed" } else { Bad "unit tests failed" }
-    & $py @pyArgs "$Root\host\orchestrator.py" --check-only
+    $be = if ($SoftwareOnly) { "software" } else { "android" }
+    & $py @pyArgs "$Root\host\orchestrator.py" --check-only --backend $be
     if ($LASTEXITCODE -eq 0) { Ok "orchestrator --check-only passed" } else { Bad "orchestrator --check-only failed" }
 }
 
@@ -173,4 +181,5 @@ Write-Host ""
 if ($script:Failed) { Write-Host "Setup finished WITH ERRORS - fix the [FAIL] items above." -ForegroundColor Red; exit 1 }
 Write-Host "DevRig-HID is ready." -ForegroundColor Green
 Write-Host "Example:"
-Write-Host "  $py host\orchestrator.py https://github.com/OWNER/REPO C:\work\REPO-out"
+if ($SoftwareOnly) { $bk = "software" } else { $bk = "android" }
+Write-Host "  $py host\orchestrator.py https://github.com/OWNER/REPO C:\work\REPO-out --backend $bk"

@@ -18,6 +18,28 @@ workspace is compressed into a timestamped ZIP.
 The board is one composite USB device: **ADB** (control channel) + **HID keyboard** (typing).
 One cable to the PC does both.
 
+## Two input backends (switch with one flag)
+
+| `--backend` | What types the keys | Needs |
+|---|---|---|
+| `software` (default) | this PC, using Windows `SendInput` scancodes | nothing but Windows, Git, VS Code, Python |
+| `android` | a physical USB keyboard (rooted Android board, `/dev/hidg0`) | the board, `adb`, root |
+
+Both run the **same engine** (cadence, Poisson pauses, combos, focus guard, verify, resume, ZIP), so
+behaviour is identical. Start now with software; when hardware arrives just add `--backend android`
+(or set it once: `setx DEVRIG_BACKEND android`). The ledger is backend-independent, so a half-finished
+run can be resumed with the other backend. Software mode is plain automation: apps can tell injected
+input from a physical keyboard, and it cannot type into elevated (admin) windows from a non-admin console.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup_windows.ps1 -AutoInstall -SoftwareOnly -RunTests
+python host\orchestrator.py https://github.com/OWNER/REPO C:\work\REPO-out            # software
+python host\orchestrator.py https://github.com/OWNER/REPO C:\work\REPO-out --backend android
+```
+
+New hardware later (e.g. a Raspberry Pi Pico) is added as one more session class in
+`host/backends.py` exposing `start() / request() / close() / alive`; nothing else changes.
+
 ## Contents
 
 | Path | Purpose |
@@ -25,6 +47,7 @@ One cable to the PC does both.
 | `host/orchestrator.py` | CLI, preflight guardrails, plan, typing loop, recovery, audit, packaging |
 | `host/state_manager.py` | Atomic `state_manager.json` ledger + process lock |
 | `host/repo_planner.py` | Clone + deterministic typing plan |
+| `host/backends.py` | Backend layer: `software` (Windows SendInput) session; hardware plug-in point |
 | `host/typer_session.py`, `host/adb_bridge.py` | ADB transport and the JSON-lines session with the daemon |
 | `host/vscode_env.py`, `host/win_focus.py` | Isolated VS Code settings; foreground/keyboard-layout guard |
 | `host/packager.py` | Lock check → ZIP → CRC + per-file SHA-256 verify → atomic rename |

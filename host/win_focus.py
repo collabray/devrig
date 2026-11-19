@@ -13,6 +13,12 @@ import os
 
 AVAILABLE = os.name == "nt"
 VSCODE_MARK = "Visual Studio Code"
+WS_HINT = None                      # folder name of OUR workspace (distinguishes it from other VS Code windows)
+
+
+def set_workspace_hint(name):
+    global WS_HINT
+    WS_HINT = name
 
 if AVAILABLE:
     import ctypes
@@ -33,6 +39,10 @@ if AVAILABLE:
     _user32.BringWindowToTop.argtypes = [wintypes.HWND]
     _user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
     _WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    try:
+        _user32.SetProcessDPIAware()                   # real pixel coordinates for GetWindowRect/SetCursorPos
+    except Exception:
+        pass
 
 
 def _title(hwnd):
@@ -58,6 +68,8 @@ def foreground_is_vscode(file_hint=None):
     title = foreground_title() or ""
     if VSCODE_MARK not in title:
         return False
+    if WS_HINT and WS_HINT not in title:
+        return False
     return True if not file_hint else (file_hint in title)
 
 
@@ -78,7 +90,7 @@ def find_vscode_windows():
     def cb(hwnd, _lp):
         if _user32.IsWindowVisible(hwnd):
             t = _title(hwnd)
-            if t.endswith(VSCODE_MARK) or (VSCODE_MARK + " -") in t:
+            if (t.endswith(VSCODE_MARK) or (VSCODE_MARK + " -") in t) and (not WS_HINT or WS_HINT in t):
                 found.append(hwnd)
         return True
 
@@ -110,3 +122,31 @@ def bring_to_front(hwnd):
 def focus_vscode():
     wins = find_vscode_windows()
     return bring_to_front(wins[0]) if wins else False
+
+
+def panic_pressed():
+    """Emergency stop: physical F12 or Pause/Break (the rig never injects either)."""
+    if not AVAILABLE:
+        return False
+    return bool(_user32.GetAsyncKeyState(0x7B) & 0x8000) or bool(_user32.GetAsyncKeyState(0x13) & 0x8000)
+
+
+def click_editor():
+    """Maximise our VS Code window and click its editor area so the text area owns the keyboard."""
+    if not AVAILABLE:
+        return False
+    wins = find_vscode_windows()
+    if not wins:
+        return False
+    hwnd = wins[0]
+    _user32.ShowWindow(hwnd, 3)                           # SW_MAXIMIZE
+    bring_to_front(hwnd)
+    rect = wintypes.RECT()
+    if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return False
+    x = rect.left + int((rect.right - rect.left) * 0.58)
+    y = rect.top + int((rect.bottom - rect.top) * 0.55)
+    _user32.SetCursorPos(x, y)
+    _user32.mouse_event(0x0002, 0, 0, 0, 0)               # left down
+    _user32.mouse_event(0x0004, 0, 0, 0, 0)               # left up
+    return True

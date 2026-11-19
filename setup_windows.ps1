@@ -12,7 +12,7 @@
 .PARAMETER UsbVid / UsbPid    USB IDs used only if the board has no Android-managed gadget (hex, e.g. 0x18d1).
 
 .EXAMPLE
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\setup_windows.ps1 -AutoInstall -RunTests
+  powershell -ExecutionPolicy Bypass -File .\setup_windows.ps1 -AutoInstall -RunTests
 #>
 [CmdletBinding()]
 param(
@@ -27,11 +27,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Root       = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RemoteDir  = "/data/local/tmp/devrig"
-$StageDir   = "/data/local/tmp/devrig_stage"
-$script:Failed   = $false
-$script:AdbExit  = 0
+$Root      = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RemoteDir = "/data/local/tmp/devrig"
+$script:Failed = $false
 
 function Step($m) { Write-Host ""; Write-Host "==> $m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "    [ OK ] $m" -ForegroundColor Green }
@@ -41,88 +39,52 @@ function Die($m)  { Write-Host "    [FAIL] $m" -ForegroundColor Red; exit 1 }
 
 function Have($name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 
-function Refresh-Path {
+function Winget-Install($id, $label) {
+    if (-not (Have "winget")) { Die "winget is not available; install $label manually." }
+    Write-Host "    installing $label via winget ..."
+    & winget install --id $id -e --silent --accept-package-agreements --accept-source-agreements | Out-Host
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                 [Environment]::GetEnvironmentVariable("Path", "User")
 }
 
-function Winget-Install($id, $label) {
-    if (-not (Have "winget")) { Die "winget is not available; install $label manually." }
-    Write-Host "    installing $label via winget ..."
-    $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    try {
-        & winget install --id $id -e --silent --accept-package-agreements --accept-source-agreements | Out-Host
-        $code = $LASTEXITCODE
-    } finally { $ErrorActionPreference = $old }
-    # winget also returns non-zero for "already installed / no update"; the caller re-checks anyway.
-    if ($code -ne 0) { Warn "winget exited with code $code for $label (verifying below)." }
-    Refresh-Path
-}
-
-# adb wrappers ---------------------------------------------------------------------------------
-# NOTE: the wrapper functions are deliberately NOT named "adb" - PowerShell resolves functions
-# before executables, so a function called Adb that runs `adb` would call itself forever.
-function Invoke-AdbCore([string[]]$a) {
-    $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    try {
-        $out = & adb.exe @a 2>&1
-        $script:AdbExit = $LASTEXITCODE
-    } finally { $ErrorActionPreference = $old }
-    return (($out | ForEach-Object { "$_" }) -join "`n")
-}
-function AdbHost {
-    # no -s serial (server-level commands)
-    return (Invoke-AdbCore ([string[]]$args))
-}
-function AdbRun {
+# adb wrappers -------------------------------------------------------------------------------
+function Adb {
     $a = @()
     if ($Serial -ne "") { $a += @("-s", $Serial) }
     $a += $args
-    return (Invoke-AdbCore ([string[]]$a))
+    $out = & adb @a 2>&1
+    return ($out | ForEach-Object { "$_" }) -join "`n"
 }
 function AdbSu([string]$cmd) {
     # single-quote the payload so the device shell hands it to su intact
     $q = "'" + $cmd.Replace("'", "'\''") + "'"
-    return (AdbRun shell "su -c $q")
-}
-function AdbPush([string]$local, [string]$remote) {
-    $out = AdbRun push $local $remote
-    if ($script:AdbExit -ne 0) { Die "adb push failed for $local`n$out" }
+    return (Adb shell "su -c $q")
 }
 
 # 1. Host tooling ------------------------------------------------------------------------------
 Step "Checking host tooling"
 if ($PSVersionTable.PSVersion.Major -lt 5) { Die "PowerShell 5.1+ is required." }
 
-function Find-Python {
-    foreach ($c in @("py", "python", "python3")) {
-        if (-not (Have $c)) { continue }
-        $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-        try {
-            $v = if ($c -eq "py") { & $c -3 --version 2>&1 } else { & $c --version 2>&1 }
-        } catch { $v = "" } finally { $ErrorActionPreference = $old }
-        # the Microsoft Store "python" stub prints a help message instead of a version -> no match
-        if ("$v" -match "Python (\d+)\.(\d+)" -and [int]$Matches[1] -eq 3 -and [int]$Matches[2] -ge 8) { return $c }
+$py = $null
+foreach ($c in @("py", "python", "python3")) {
+    if (Have $c) {
+        $v = if ($c -eq "py") { & py -3 --version 2>&1 } else { & $c --version 2>&1 }
+        if ("$v" -match "Python (\d+)\.(\d+)" -and [int]$Matches[1] -eq 3 -and [int]$Matches[2] -ge 8) { $py = $c; break }
     }
-    return $null
 }
-
-$py = Find-Python
-if (-not $py -and $AutoInstall) { Winget-Install "Python.Python.3.12" "Python 3.12"; $py = Find-Python }
-if (-not $py) { Die "Python 3.8+ not found (use -AutoInstall, or install from python.org and reopen the terminal)." }
+if (-not $py -and $AutoInstall) { Winget-Install "Python.Python.3.12" "Python 3.12"; $py = "python" }
+if (-not $py) { Die "Python 3.8+ not found (use -AutoInstall or install from python.org)." }
 Ok "Python launcher: $py"
 
 if (-not (Have "git")) { if ($AutoInstall) { Winget-Install "Git.Git" "Git" } }
-if (Have "git") { Ok ("git: " + (& git --version)) } else { Die "git not found (use -AutoInstall, then reopen the terminal)." }
+if (Have "git") { Ok ("git: " + (& git --version)) } else { Die "git not found (use -AutoInstall)." }
 
 if (-not (Have "code")) { if ($AutoInstall) { Winget-Install "Microsoft.VisualStudioCode" "Visual Studio Code" } }
 if (Have "code") { Ok "VS Code CLI ('code') found" } else { Die "VS Code CLI 'code' not on PATH (reinstall VS Code with 'Add to PATH' enabled)." }
 
 if (-not $SoftwareOnly) {
-    if (-not (Have "adb.exe")) { if ($AutoInstall) { Winget-Install "Google.PlatformTools" "Android platform-tools (adb)" } }
-    if (Have "adb.exe") {
-        Ok ("adb: " + ((AdbHost version) -split "\r?\n" | Select-Object -First 1))
-    } else { Die "adb not found (use -AutoInstall, then reopen the terminal if PATH did not refresh)." }
+    if (-not (Have "adb")) { if ($AutoInstall) { Winget-Install "Google.PlatformTools" "Android platform-tools (adb)" } }
+    if (Have "adb") { Ok ("adb: " + ((& adb version | Select-Object -First 1))) } else { Die "adb not found (use -AutoInstall)." }
 }
 
 # keyboard layout (HID scancodes assume US QWERTY)
@@ -133,14 +95,11 @@ try {
 } catch { Warn "could not read the input language list" }
 
 if ($SoftwareOnly) { Warn "software-only mode: skipping the Android board steps" } else {
-
 # 2. Device -------------------------------------------------------------------------------------
 Step "Looking for the Android development board"
-AdbHost start-server | Out-Null
-$lines = @((AdbHost devices) -split "\r?\n" |
-           ForEach-Object { $_.Trim() } |
-           Where-Object { $_ -match "\s(device|unauthorized|offline|recovery|sideload)$" })
-if ($lines.Count -eq 0) { Die "No device attached. Enable USB debugging on the board and plug it in (data cable)." }
+& adb start-server | Out-Null
+$lines = (& adb devices) | Select-Object -Skip 1 | Where-Object { $_ -match "\S" }
+if (-not $lines) { Die "No device attached. Enable USB debugging on the board and plug it in (data cable)." }
 if ($lines | Where-Object { $_ -match "unauthorized" }) { Die "Device is unauthorized: accept the RSA fingerprint prompt on the board." }
 $devs = @($lines | Where-Object { $_ -match "\sdevice$" })
 if ($devs.Count -eq 0) { Die "No device in 'device' state: $($lines -join '; ')" }
@@ -152,17 +111,12 @@ if ($id -match "uid=0") { Ok "root (su) works" } else { Die "su is not available
 
 # 3. Push scripts ------------------------------------------------------------------------------
 Step "Pushing rig scripts to $RemoteDir"
-# Push into a staging dir as the adb shell user, then copy into a root-owned, non-world-writable
-# directory so no other process can swap the scripts that later run as root.
-AdbSu "rm -rf $StageDir && mkdir -p $StageDir && chmod 755 $StageDir" | Out-Null
-AdbPush "$Root\android\hid_typer.py"        "$StageDir/hid_typer.py"
-AdbPush "$Root\android\setup_hid_gadget.sh" "$StageDir/setup_hid_gadget.sh"
-AdbSu "mkdir -p $RemoteDir && cp $StageDir/hid_typer.py $StageDir/setup_hid_gadget.sh $RemoteDir/ && rm -rf $StageDir" | Out-Null
-# repair CRLF line endings if git/Windows converted the files
-AdbSu "sed -i 's/\r`$//' $RemoteDir/setup_hid_gadget.sh $RemoteDir/hid_typer.py" | Out-Null
-AdbSu "chown root:root $RemoteDir $RemoteDir/hid_typer.py $RemoteDir/setup_hid_gadget.sh 2>/dev/null; chmod 755 $RemoteDir $RemoteDir/hid_typer.py $RemoteDir/setup_hid_gadget.sh" | Out-Null
-$chk = AdbSu "ls $RemoteDir/hid_typer.py $RemoteDir/setup_hid_gadget.sh 2>&1"
-if ($chk -match "No such file") { Die "Scripts are missing on the board after the push:`n$chk" }
+AdbSu "mkdir -p $RemoteDir && chmod 777 $RemoteDir" | Out-Null
+Adb push "$Root\android\hid_typer.py" "$RemoteDir/hid_typer.py" | Out-Null
+Adb push "$Root\android\setup_hid_gadget.sh" "$RemoteDir/setup_hid_gadget.sh" | Out-Null
+AdbSu "chmod 755 $RemoteDir/hid_typer.py $RemoteDir/setup_hid_gadget.sh" | Out-Null
+# repair CRLF line endings if git/Windows converted the shell script
+AdbSu "sed -i 's/\r$//' $RemoteDir/setup_hid_gadget.sh $RemoteDir/hid_typer.py" | Out-Null
 Ok "scripts pushed"
 
 # 4. Python on the board ------------------------------------------------------------------------
@@ -175,7 +129,7 @@ foreach ($cand in @(@("python3", ""), @("python", ""), @("/data/data/com.termux/
 }
 if (-not $pyDev) { Die "No Python 3 on the board. Install Termux and run 'pkg install python', or push a python3 binary." }
 $st = AdbSu ($pyDev[1] + $pyDev[0] + " $RemoteDir/hid_typer.py selftest 2>&1")
-Write-Host ($st -replace "(?m)^", "      ")
+Write-Host ($st -replace "^", "      ")
 if ($st -match "SELFTEST OK") { Ok "board-side scancode/pacing self-test passed" } else { Bad "board-side self-test failed" }
 
 # 5. USB gadget ----------------------------------------------------------------------------------
@@ -191,7 +145,7 @@ if (-not $SkipGadget) {
         for ($i = 0; $i -lt 60 -and -not $result; $i++) {
             Start-Sleep -Seconds 2
             try { $log = AdbSu "cat $RemoteDir/gadget_setup.log 2>/dev/null; true" } catch { continue }
-            foreach ($l in ($log -split "\r?\n")) { if ($l -match "^DEVRIG_RESULT=") { $result = $l.Trim() } }
+            foreach ($l in ($log -split "`n")) { if ($l -match "^DEVRIG_RESULT=") { $result = $l.Trim() } }
         }
         if (-not $result) { Die "Gadget setup did not report a result.`n$log" }
         if ($result -match "FAIL") { Die "Gadget setup failed: $result`n$log" }
@@ -204,15 +158,9 @@ if (-not $SkipGadget) {
     if ($state -match "No such file") { Bad "/dev/hidg0 is missing (kernel without CONFIG_USB_CONFIGFS_F_HID?)" } else { Ok "/dev/hidg0 present" }
 
     try {
-        $vid = ($UsbVid -replace "^0[xX]", "").PadLeft(4, "0").ToUpper()
-        $hid = Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object {
-            $_.InstanceId -match "VID_$vid" -and $_.Class -in @("Keyboard", "HIDClass", "USB")
-        }
-        if ($hid) {
-            Ok ("Windows sees: " + (($hid | Select-Object -First 3 | ForEach-Object { $_.FriendlyName + " [" + $_.InstanceId + "]" }) -join "; "))
-        } else {
-            Warn "No device with VID_$vid visible to Windows yet. If the board uses an Android-managed gadget it may use a different VID; check: Get-PnpDevice -PresentOnly -Class Keyboard"
-        }
+        $hid = Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object { $_.InstanceId -like "USB\VID_*" -and $_.Class -in @("Keyboard", "HIDClass") -and $_.FriendlyName -match "Keyboard|HID" }
+        if ($hid) { Ok ("Windows sees: " + (($hid | Select-Object -First 2 | ForEach-Object { $_.FriendlyName + " [" + $_.InstanceId + "]" }) -join "; ")) }
+        else { Warn "No new USB keyboard visible to Windows yet (wait a few seconds and run: Get-PnpDevice -Class Keyboard)." }
     } catch { Warn "Get-PnpDevice unavailable; skipping Windows-side device check." }
 } else { Warn "gadget setup skipped (-SkipGadget)" }
 
@@ -222,14 +170,11 @@ if (-not $SkipGadget) {
 if ($RunTests) {
     Step "Running host-side tests"
     $pyArgs = if ($py -eq "py") { @("-3") } else { @() }
-    $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    try {
-        & $py @pyArgs "$Root\tests\test_core.py"
-        if ($LASTEXITCODE -eq 0) { Ok "unit tests passed" } else { Bad "unit tests failed" }
-        $be = if ($SoftwareOnly) { "software" } else { "android" }
-        & $py @pyArgs "$Root\host\orchestrator.py" --check-only --backend $be
-        if ($LASTEXITCODE -eq 0) { Ok "orchestrator --check-only passed" } else { Bad "orchestrator --check-only failed" }
-    } finally { $ErrorActionPreference = $old }
+    & $py @pyArgs "$Root\tests\test_core.py"
+    if ($LASTEXITCODE -eq 0) { Ok "unit tests passed" } else { Bad "unit tests failed" }
+    $be = if ($SoftwareOnly) { "software" } else { "android" }
+    & $py @pyArgs "$Root\host\orchestrator.py" --check-only --backend $be
+    if ($LASTEXITCODE -eq 0) { Ok "orchestrator --check-only passed" } else { Bad "orchestrator --check-only failed" }
 }
 
 Write-Host ""

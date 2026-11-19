@@ -220,32 +220,39 @@ class LocalSession(object):
         worker = threading.Thread(target=self.server.handle, args=(msg,), daemon=True)
         self._worker = worker
         worker.start()
-        start = time.monotonic()
-        abort_sent = False
-        while True:
-            if timeout is not None and time.monotonic() - start > timeout:
-                self.server.abort_ids.add(cid)
-                raise SessionDead("request %s timed out" % msg.get("cmd"))
-            try:
-                ev = self.events.get(timeout=0.5)
-            except queue.Empty:
-                if not worker.is_alive() and self.events.empty():
-                    raise SessionDead("typing worker ended without a result")
+        try:
+            start = time.monotonic()
+            abort_sent = False
+            while True:
+                if timeout is not None and time.monotonic() - start > timeout:
+                    self.server.abort_ids.add(cid)
+                    raise SessionDead("request %s timed out" % msg.get("cmd"))
+                try:
+                    ev = self.events.get(timeout=0.5)
+                except queue.Empty:
+                    if not worker.is_alive() and self.events.empty():
+                        raise SessionDead("typing worker ended without a result")
+                    if abort_check and not abort_sent and abort_check():
+                        abort_sent = True
+                        with self.server.abort_lock:
+                            self.server.abort_ids.add(cid)
+                    continue
+                kind = ev.get("event")
+                if kind in ("hb", "log"):
+                    continue
+                if ev.get("id") not in (None, cid) and kind in ("ack", "typed", "aborted", "error", "progress"):
+                    continue
+                if kind in ("ack", "typed", "aborted", "error"):
+                    return ev
+                if on_event:
+                    on_event(ev)
                 if abort_check and not abort_sent and abort_check():
                     abort_sent = True
                     with self.server.abort_lock:
                         self.server.abort_ids.add(cid)
-                continue
-            kind = ev.get("event")
-            if kind in ("hb", "log"):
-                continue
-            if ev.get("id") not in (None, cid) and kind in ("ack", "typed", "aborted", "error", "progress"):
-                continue
-            if kind in ("ack", "typed", "aborted", "error"):
-                return ev
-            if on_event:
-                on_event(ev)
-            if abort_check and not abort_sent and abort_check():
-                abort_sent = True
+        finally:                                        # any error / Ctrl+C: stop the keyboard at once
+            if worker.is_alive():
                 with self.server.abort_lock:
                     self.server.abort_ids.add(cid)
+                worker.join(timeout=5)
+            self.server.typist.release_all()

@@ -32,7 +32,7 @@ run can be resumed with the other backend. Software mode is plain automation: ap
 input from a physical keyboard, and it cannot type into elevated (admin) windows from a non-admin console.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup_windows.ps1 -AutoInstall -RunTests
+powershell -ExecutionPolicy Bypass -File .\setup_windows.ps1 -AutoInstall -SoftwareOnly -RunTests
 python host\orchestrator.py https://github.com/OWNER/REPO C:\work\REPO-out            # software
 python host\orchestrator.py https://github.com/OWNER/REPO C:\work\REPO-out --backend android
 ```
@@ -161,7 +161,34 @@ orchestrator.py REPO_URL WORKSPACE
 Gadget script on the board: `su -c 'sh /data/local/tmp/devrig/setup_hid_gadget.sh [--status|--teardown|--permissive|--udc NAME]'`.
 Typing smoke test: `su -c 'python3 /data/local/tmp/devrig/hid_typer.py demo --text "hello\n"'` (focus Notepad first).
 
+## Safety while it types
+
+* **Emergency stop: press F12 (or Pause/Break) on the physical keyboard.** Typing halts within half a
+  second; progress is saved and the same command resumes.
+* Do not click or type while it runs. Before every file the tool types **one probe character** and checks
+  that it reached the file before typing the rest; if the editor does not own the keyboard it re-focuses
+  (it clicks the editor area) and retries instead of typing into menus or panels.
+* The tool only types while the foreground window is *its own* VS Code window (title contains the
+  workspace folder name); other VS Code windows are ignored. Close them anyway to be safe.
+* The isolated VS Code hides the AI/chat panel, command centre, menu bar and activity bar.
+* A file whose on-disk content disagrees with the plan is repaired by closing all editors and trimming
+  the file to its last correct byte - the tool never uses Ctrl+A / Delete.
+
+## Speed
+
+Typing 450 KB at 70 WPM takes ~23 hours. For a trial use a small repo, raise `--wpm 250`, or make big
+files copy instead of type: `--max-file-bytes 20000`. `--dry-run` prints the estimate first.
+
 ## Troubleshooting
+
+**"It does not create folders."** Folders are created on demand when the first file inside them is
+reached (log line `mkdir <folder>`). A repo whose files are all in the top level has none to create.
+Folders are made by the host, not by typing in VS Code's explorer.
+
+**`PermissionError ... state_manager.json`.** Antivirus/indexer briefly locking the ledger. Fixed: writes
+now retry for ~15 s and a failed progress save never stops the run. Excluding the `.devrig_*` folder in
+Windows Security makes it smoother.
+
 
 **`adb devices` empty / unauthorized.** Use a data cable; enable USB debugging; accept the RSA prompt;
 `adb kill-server && adb start-server`. Install the Google USB driver if Windows shows an unknown ADB

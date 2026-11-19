@@ -47,6 +47,10 @@ def main(backend="android"):
             lines.append(line)
             if "typing src/util/helpers.js" in line or time.time() - t0 > 60: break
         time.sleep(0.8); p.send_signal(signal.SIGKILL); p.wait()
+        part = os.path.join(ws, "src", "util", "helpers.js")
+        time.sleep(3)                                  # let the virtual keyboard drain the killed run
+        if os.path.exists(part):                       # simulate stray characters typed elsewhere/corruption
+            open(part, "ab").write(b"ZZZ-corrupt")
         print("--- run 1 killed ---"); print("".join(lines[-6:]))
         r = subprocess.run(cmd + ["--status"], env=env, capture_output=True, text=True); print(r.stdout)
         # run 2: resume to completion
@@ -54,6 +58,7 @@ def main(backend="android"):
         print(r.stdout[-2500:], r.stderr[-800:])
         assert r.returncode == 0, "resume run failed"
         assert "resuming run #2" in r.stdout
+        assert "diverges at byte" in r.stdout, "corruption path was not exercised"
         zips = [f for f in os.listdir(os.path.dirname(ws)) if f.endswith(".zip")]
         assert len(zips) == 1, zips
         z = zipfile.ZipFile(os.path.join(os.path.dirname(ws), zips[0])); assert z.testzip() is None

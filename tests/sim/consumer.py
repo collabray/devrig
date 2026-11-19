@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "android"
 import hid_typer as H
 R = os.environ["FAKEROOT"]
 dev, cur_f = R + "/hidg0", R + "/vscode_current"
-pos, prev, cur, buf, sel = 0, set(), None, bytearray(), False
+pos, prev, cur, buf, sel, stamp = 0, set(), None, bytearray(), False, None
 def save():
     open(cur, "wb").write(bytes(buf))
 while not os.path.exists(R + "/consumer_stop"):
@@ -19,10 +19,10 @@ while not os.path.exists(R + "/consumer_stop"):
         mod, keys = H.decode_report(rep)
         new = set(keys) - prev; prev = set(keys)
         for k in new:
-            try: path = open(cur_f).read().strip()
-            except OSError: path = None
-            if path and path != cur:
-                cur = path; buf = bytearray(open(cur, "rb").read()); sel = False
+            try: path = open(cur_f).read().strip(); st = os.stat(cur_f).st_mtime_ns
+            except OSError: path = None; st = None
+            if path and (path != cur or st != stamp):     # (re)opened: reload from disk like VS Code
+                cur, stamp = path, st; buf = bytearray(open(cur, "rb").read()); sel = False
             if not cur: continue
             ctrl = mod & 0x11
             if ctrl:

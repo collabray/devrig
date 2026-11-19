@@ -99,6 +99,7 @@ class Orchestrator(object):
         self._typed_at_start = 0
         self.cfg = None
         self.backend = args.backend
+        self.panic = False
         self.pacing = {"wpm": args.wpm, "pause_min": args.pause_min, "pause_max": args.pause_max,
                        "pause_mean_interval": args.pause_mean_interval, "hold_ms": args.hold_ms}
 
@@ -176,6 +177,7 @@ class Orchestrator(object):
                 raise FatalError("workspace %s is not empty; use an empty directory or pass "
                                  "--allow-nonempty" % self.ws)
         self.ws.mkdir(parents=True, exist_ok=True)
+        win_focus.set_workspace_hint(self.ws.name)
         if self.state.data.get("config"):
             self.cfg = self.state.data["config"]
         else:
@@ -404,6 +406,20 @@ class Orchestrator(object):
             raise FatalError("VS Code CLI keeps failing: %s" % err)
         self.sleep(self.args.settle)
         self.regain_focus(dest.name)
+        self.focus_editor()
+
+    def focus_editor(self):
+        """Give the editor TEXT AREA the keyboard (not the menu bar, AI panel or sidebar)."""
+        self.regain_focus()
+        if win_focus.AVAILABLE and not self.args.no_click_focus:
+            win_focus.click_editor()
+            time.sleep(0.5)
+
+    def check_panic(self):
+        if self.panic or win_focus.panic_pressed():
+            self.panic = True
+            raise FatalError("stopped by the emergency key (F12 / Pause). Progress is saved; "
+                             "run the same command to resume.")
 
     # ------------------------------------------------------------ file ops --
     def _local(self, rel):
@@ -522,8 +538,11 @@ class Orchestrator(object):
         def abort_check():
             if not win_focus.AVAILABLE:
                 return False
+            if win_focus.panic_pressed():
+                self.panic = True
+                return True
             now = time.monotonic()
-            if now - last[0] < 1.0:
+            if now - last[0] < 0.5:
                 return False
             last[0] = now
             return not win_focus.foreground_is_vscode()
@@ -543,6 +562,59 @@ class Orchestrator(object):
                                      "prev_char": prev_char, "pre": pre},
                                     abort_check=abort_check, on_event=on_event)
 
+    def _truncate_to_prefix(self, dest, keep):
+        """Safe repair: close all editors (no stale buffer can survive), trim the file on disk."""
+        if self.session and (not win_focus.AVAILABLE or win_focus.foreground_is_vscode()):
+            try:
+                self._keys([["ctrl", "k"], ["ctrl", "w"]])
+            except (typer_session.SessionDead, Recoverable, FatalError):
+                pass
+        self.sleep(1.0)
+        for _ in range(30):
+            try:
+                dest.write_bytes(keep)
+                return
+            except PermissionError:
+                time.sleep(0.3)
+        raise FatalError("cannot repair %s (file is locked by another program)" % dest)
+
+    def _probe_focus(self, entry, dest, exp, prefix):
+        """Type ONE character and confirm it reached the file before typing the rest.
+        Returns True (ok) or None (file diverged -> caller re-reconciles)."""
+        want = exp[:prefix + 1]
+        first = exp[prefix:prefix + 1].decode("ascii")
+        prev = exp[prefix - 1:prefix].decode("ascii") if prefix else None
+        pre = [["ctrl", "1"], ["ctrl", "End"]]
+        for attempt in range(1, self.args.focus_retries + 1):
+            self.check_panic()
+            ev = self._run_type(entry, first, prefix, prev, pre)
+            if ev.get("event") == "error":
+                self._daemon_error(ev)
+            if ev.get("event") == "aborted":
+                self.check_panic()
+                self.regain_focus()
+                self.focus_editor()
+                continue
+            end = time.monotonic() + max(6.0 * self.scale, 2.0)
+            cur = b""
+            while time.monotonic() < end:
+                try:
+                    cur = dest.read_bytes()
+                except OSError:
+                    cur = b""
+                if cur == want:
+                    return True
+                time.sleep(0.2)
+            if cur != exp[:prefix]:
+                return None                          # something else changed the file
+            self.log.warning("probe %d/%d: the first character did not reach the editor - the "
+                             "keyboard focus is elsewhere. Re-focusing (or click inside the editor "
+                             "text area yourself).", attempt, self.args.focus_retries)
+            self.focus_editor()
+            self.sleep(2.0)
+        raise FatalError("could not give the editor keyboard focus after %d tries. Close other VS "
+                         "Code windows / popups and re-run." % self.args.focus_retries)
+
     def type_file(self, entry):
         path = entry["path"]
         dest = self._local(path)
@@ -552,6 +624,7 @@ class Orchestrator(object):
         focus_losses = 0
         self.state.begin_file(path)
         while True:
+            self.check_panic()
             self._ensure_dir(dest.parent)
             if not dest.exists():
                 dest.write_bytes(b"")                      # stub so the IDE can open it
@@ -561,32 +634,34 @@ class Orchestrator(object):
                 self._finish_file(entry, exp, close_tab=False)
                 return
             n = common_prefix_len(disk, exp)
-            wipe = n != len(disk)                          # disk diverges from the plan
-            prefix = 0 if wipe else n
-            if wipe:
-                self.log.warning("%s: on-disk content diverges at byte %d; retyping from scratch "
-                                 "inside the IDE", path, n)
-            elif prefix:
+            if n != len(disk):                             # disk diverges from the plan
+                self.log.warning("%s: content on disk diverges at byte %d; trimming to the verified "
+                                 "prefix and continuing", path, n)
+                self._truncate_to_prefix(dest, exp[:n])
+            prefix = n
+            if prefix:
                 self.log.info("%s: resuming at byte %d of %d (verified on disk)", path, prefix, len(exp))
             else:
                 self.log.info("typing %s (%d bytes)", path, len(exp))
             self.state.update_entry(path, offset=prefix, attempts=attempts)
-            self.open_in_vscode(dest, b"" if wipe else exp[:prefix])
-            pre = [["ctrl", "1"], ["ctrl", "End"]]
-            if wipe:
-                pre += [["ctrl", "a"], ["delete"]]
-            ev = self._run_type(entry, text[prefix:], prefix, text[prefix - 1] if prefix else None, pre)
-            kind = ev.get("event")
-            if kind == "aborted":
-                focus_losses += 1
-                self.log.warning("typing halted at offset %s because VS Code lost focus (%d)",
-                                 ev.get("offset"), focus_losses)
-                if focus_losses > 25:
-                    raise FatalError("VS Code keeps losing focus; aborting")
-                self.regain_focus()
+            self.open_in_vscode(dest, exp[:prefix])
+            if self._probe_focus(entry, dest, exp, prefix) is None:
                 continue
-            if kind == "error":
-                self._daemon_error(ev)
+            start = prefix + 1
+            if start < len(text):
+                ev = self._run_type(entry, text[start:], start, text[prefix], None)
+                kind = ev.get("event")
+                if kind == "aborted":
+                    self.check_panic()
+                    focus_losses += 1
+                    self.log.warning("typing halted at offset %s because VS Code lost focus (%d)",
+                                     ev.get("offset"), focus_losses)
+                    if focus_losses > 25:
+                        raise FatalError("VS Code keeps losing focus; aborting")
+                    self.regain_focus()
+                    continue
+                if kind == "error":
+                    self._daemon_error(ev)
             self._keys([["ctrl", "s"]])
             if self._wait_disk_match(dest, exp):
                 self._finish_file(entry, exp, close_tab=True)
@@ -817,8 +892,10 @@ def build_parser():
     g.add_argument("--reconnect-timeout", type=float, default=300.0)
     g.add_argument("--max-file-attempts", type=int, default=3)
     g.add_argument("--focus-timeout", type=float, default=300.0)
-    g.add_argument("--vscode-startup", type=float, default=4.0)
-    g.add_argument("--settle", type=float, default=1.5, help="seconds after opening a file before typing")
+    g.add_argument("--vscode-startup", type=float, default=8.0, help="seconds to wait after launching VS Code")
+    g.add_argument("--focus-retries", type=int, default=6)
+    g.add_argument("--no-click-focus", action="store_true", help="do not click the editor to focus it")
+    g.add_argument("--settle", type=float, default=3.0, help="seconds after opening a file before typing")
     g.add_argument("--timing-scale", type=float, default=1.0, help=argparse.SUPPRESS)
     g.add_argument("--force-rig", action="store_true", help=argparse.SUPPRESS)
     g.add_argument("-v", "--verbose", action="store_true")

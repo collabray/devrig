@@ -53,6 +53,17 @@ class State(unittest.TestCase):
         open(p, "w").write("{corrupt")            # simulated torn write
         s2 = SM.StateManager(p); self.assertTrue(s2.load())
         self.assertIn(s2.entry("a.txt")["status"], ("pending", "done"))
+    def test_survives_windows_file_lock(self):
+        d = tempfile.mkdtemp(); p = os.path.join(d, "s.json")
+        real, calls = os.replace, {"n": 0}
+        def flaky(a, b):
+            calls["n"] += 1
+            if calls["n"] <= 5: raise PermissionError(5, "Access is denied")
+            return real(a, b)
+        os.replace = flaky
+        try: SM.atomic_write_text(p, '{"ok": 1}')
+        finally: os.replace = real
+        self.assertEqual(json.load(open(p)), {"ok": 1}); self.assertGreater(calls["n"], 5)
     def test_lock(self):
         d = tempfile.mkdtemp(); a = SM.ProcessLock(os.path.join(d, "l")); a.acquire()
         b = SM.ProcessLock(os.path.join(d, "l"))

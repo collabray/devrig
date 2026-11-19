@@ -41,6 +41,7 @@ def _now():
 
 
 def atomic_write_text(path, text):
+    """Atomic write that survives Windows antivirus / indexer locks on the target."""
     path = str(path)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
@@ -52,7 +53,24 @@ def atomic_write_text(path, text):
             shutil.copyfile(path, path + ".bak")
         except OSError:
             pass
-    os.replace(tmp, path)
+    last = None
+    for attempt in range(60):                      # ~15 s of patience
+        try:
+            os.replace(tmp, path)
+            last = None
+            break
+        except PermissionError as exc:             # WinError 5/32: file briefly locked
+            last = exc
+            time.sleep(0.05 + 0.02 * attempt)
+    if last is not None:                           # last resort: overwrite in place
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
     if os.name != "nt":
         try:
             dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
@@ -193,10 +211,16 @@ class StateManager(object):
             if self._dirty:
                 self.save()
 
-    def _maybe_save(self, interval=1.0):
+    def _maybe_save(self, interval=3.0):
+        """Throttled save for advisory progress; a failed write must never stop typing."""
         self._dirty = True
         if time.monotonic() - self._last_save >= interval:
-            self.save()
+            try:
+                self.save()
+            except OSError as exc:
+                self._last_save = time.monotonic()
+                if self.log:
+                    self.log.warning("could not write the ledger now (%s); will retry", exc)
 
     # ----------------------------------------------------------- run level --
     @property
@@ -284,13 +308,13 @@ class StateManager(object):
     def note_progress(self, path, offset):
         with self._lock:
             self.data["plan"]["files"][path]["offset"] = int(offset)
-            self._maybe_save(1.0)
+            self._maybe_save(3.0)
 
     def add_directory(self, rel):
         with self._lock:
             if rel not in self.data["directories"]:
                 self.data["directories"].append(rel)
-                self._maybe_save(1.0)
+                self._maybe_save(3.0)
 
     def stats(self):
         ents = self.entries()

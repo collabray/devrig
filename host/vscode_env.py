@@ -92,6 +92,23 @@ SETTINGS = {
     "git.enabled": False,
     "git.autofetch": False,
     "problems.decorations.enabled": False,
+    # --- nothing else may grab the keyboard focus ---------------------------------
+    "chat.disableAIFeatures": True,
+    "chat.commandCenter.enabled": False,
+    "chat.agent.enabled": False,
+    "workbench.secondarySideBar.defaultVisibility": "hidden",
+    "workbench.layoutControl.enabled": False,
+    "window.commandCenter": False,
+    "window.menuBarVisibility": "hidden",
+    "workbench.activityBar.location": "hidden",
+    "workbench.editor.showTabs": "single",
+    "workbench.view.alwaysShowHeaderActions": False,
+    "breadcrumbs.enabled": False,
+    "editor.minimap.enabled": False,
+    "editor.stickyScroll.enabled": False,
+    "terminal.integrated.enablePersistentSessions": False,
+    "workbench.panel.defaultLocation": "bottom",
+    "workbench.statusBar.visible": True,
 }
 
 

@@ -49,6 +49,10 @@ class FatalError(RuntimeError):
     """Unrecoverable: needs operator action."""
 
 
+class Stopped(RuntimeError):
+    """The operator asked to stop (Stop button, STOP file, F12 / Pause). Progress is saved."""
+
+
 class Recoverable(RuntimeError):
     """Transient rig failure: reconnect, verify, resume."""
 
@@ -415,11 +419,19 @@ class Orchestrator(object):
             win_focus.click_editor()
             time.sleep(0.5)
 
-    def check_panic(self):
+    def stop_requested(self):
         if self.panic or win_focus.panic_pressed():
             self.panic = True
-            raise FatalError("stopped by the emergency key (F12 / Pause). Progress is saved; "
-                             "run the same command to resume.")
+        try:
+            if (self.ctrl / "STOP").exists():
+                self.panic = True
+        except OSError:
+            pass
+        return self.panic
+
+    def check_panic(self):
+        if self.stop_requested():
+            raise Stopped("stopped by the operator (Stop button / F12 / Pause)")
 
     # ------------------------------------------------------------ file ops --
     def _local(self, rel):
@@ -536,11 +548,10 @@ class Orchestrator(object):
         last = [0.0]
 
         def abort_check():
+            if self.stop_requested():
+                return True
             if not win_focus.AVAILABLE:
                 return False
-            if win_focus.panic_pressed():
-                self.panic = True
-                return True
             now = time.monotonic()
             if now - last[0] < 0.5:
                 return False
@@ -923,6 +934,10 @@ def main(argv=None):
         if args.check_only:
             return orch.cmd_check()
         orch.ctrl.mkdir(parents=True, exist_ok=True)
+        try:
+            (orch.ctrl / "STOP").unlink()
+        except OSError:
+            pass
         with state_manager.ProcessLock(orch.ctrl / "devrig.lock"):
             orch.load_state()
             orch.ensure_plan()
@@ -951,6 +966,12 @@ def main(argv=None):
             orch.state.event("fatal: %s" % exc)
             orch.state.flush()
         return 1
+    except Stopped as exc:
+        orch.log.warning("STOPPED: %s. Progress is saved; start again to resume.", exc)
+        if orch.state and orch.state.data:
+            orch.state.event("stopped by operator")
+            orch.state.flush()
+        return 130
     except KeyboardInterrupt:
         orch.log.warning("interrupted - state saved; re-run the same command to resume")
         if orch.state and orch.state.data:

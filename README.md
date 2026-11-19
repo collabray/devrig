@@ -18,6 +18,20 @@ workspace is compressed into a timestamped ZIP.
 The board is one composite USB device: **ADB** (control channel) + **HID keyboard** (typing).
 One cable to the PC does both.
 
+## Using the window (no commands needed)
+
+Double-click **`DevRig-HID.bat`** (or run `setup_windows.ps1 -Shortcut` once to get a Desktop icon).
+
+1. Paste the GitHub link (the **Paste** button also accepts a whole `git clone ...` line).
+2. **Browse...** to a new, empty folder.
+3. Click **Start**. The window minimises, VS Code opens and typing begins after a 5-second countdown.
+
+Other buttons: **Preview plan** (shows what will be typed and how long it takes; types nothing),
+**Check setup**, **Stop** (halts cleanly: keys released, progress saved), **Open result folder**.
+If the folder has unfinished progress the window says so and **Start** resumes it. The window is only a
+front end for `host/orchestrator.py`; everything below still works from the command line. Advanced
+extra command-line options can be passed to the window through the `DEVRIG_EXTRA_ARGS` environment variable.
+
 ## Two input backends (switch with one flag)
 
 | `--backend` | What types the keys | Needs |
@@ -44,6 +58,7 @@ New hardware later (e.g. a Raspberry Pi Pico) is added as one more session class
 
 | Path | Purpose |
 |---|---|
+| `host/gui.py`, `DevRig-HID.bat` | Point-and-click window (Tkinter, standard library only) |
 | `host/orchestrator.py` | CLI, preflight guardrails, plan, typing loop, recovery, audit, packaging |
 | `host/state_manager.py` | Atomic `state_manager.json` ledger + process lock |
 | `host/repo_planner.py` | Clone + deterministic typing plan |

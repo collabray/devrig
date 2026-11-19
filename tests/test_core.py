@@ -1,7 +1,7 @@
 import json, os, sys, tempfile, unittest, zipfile
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(HERE)
 sys.path[:0] = [os.path.join(ROOT, "host"), os.path.join(ROOT, "android")]
-import backends as B, hid_typer as H, state_manager as SM, packager as P, repo_planner as RP, orchestrator as O
+import gui as G, backends as B, hid_typer as H, state_manager as SM, packager as P, repo_planner as RP, orchestrator as O
 
 class Scancodes(unittest.TestCase):
     def test_every_printable_roundtrips(self):
@@ -31,6 +31,27 @@ class SoftwareBackend(unittest.TestCase):
         self.assertEqual(ev, [(0x1D, False, True), (0x4F, True, True)])
     def test_ctrl_s(self):
         self.assertEqual(B.SCAN_TABLE[H.KEYCODES["s"]], (0x1F, False))
+
+class GuiHelpers(unittest.TestCase):
+    S = {"repo": "git clone https://github.com/o/r.git", "workspace": "C:/w/x", "backend": "software",
+         "wpm": 90, "max_kb": 20, "package": False, "reset": True, "non_ascii": "copy"}
+    def test_clean_repo(self):
+        self.assertEqual(G.clean_repo("  git clone https://github.com/o/r.git  "), "https://github.com/o/r.git")
+        self.assertEqual(G.clean_repo(""), "")
+    def test_command(self):
+        c = G.build_command(self.S, "run", python="py")
+        self.assertEqual(c[:2], ["py", "-u"])
+        for x in ("https://github.com/o/r.git", "C:/w/x", "--no-package", "--reset"): self.assertIn(x, c)
+        self.assertEqual(c[c.index("--max-file-bytes") + 1], str(20 * 1024))
+        self.assertIn("--dry-run", G.build_command(self.S, "plan", python="py"))
+        self.assertEqual(G.build_command(self.S, "check", python="py")[-3:], ["--check-only", "--backend", "software"])
+    def test_parse(self):
+        l = "11:00:00 INFO    [3/9 files | 120/1682 typed bytes | ETA 00:01:02] done: a.py"
+        self.assertEqual(G.parse_line(l)["progress"], (3, 9, 120, 1682)); self.assertEqual(G.parse_line(l)["eta"], "00:01:02")
+        self.assertEqual(G.parse_line("x INFO    DONE  archive: C:\\w\\a.zip")["archive"], "C:\\w\\a.zip")
+        self.assertEqual(G.parse_line("x ERROR   boom")["level"], "error")
+        self.assertEqual(G.parse_line("x WARNING hmm")["level"], "warn")
+        self.assertEqual(G.parse_line("x INFO    typing src/a.py (10 bytes)")["current"], "src/a.py")
 
 class Pacing(unittest.TestCase):
     def test_pauses_in_range_and_poisson_rate(self):

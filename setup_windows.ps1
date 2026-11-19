@@ -4,6 +4,7 @@
   Android board, creates the USB HID gadget and verifies that Windows sees the keyboard.
 
 .PARAMETER AutoInstall   Install missing Git / VS Code / Python / adb with winget.
+.PARAMETER Shortcut      Create a "DevRig-HID" shortcut on the Desktop that opens the window.
 .PARAMETER SoftwareOnly  No hardware: only check/install the PC tools (use with --backend software).
 .PARAMETER Serial        adb serial when more than one device is attached.
 .PARAMETER SkipGadget    Do not (re)configure the USB gadget (push + checks only).
@@ -18,6 +19,7 @@
 param(
     [switch]$AutoInstall,
     [switch]$SoftwareOnly,
+    [switch]$Shortcut,
     [string]$Serial = "",
     [switch]$SkipGadget,
     [switch]$ForceGadget,
@@ -175,6 +177,18 @@ if ($RunTests) {
     $be = if ($SoftwareOnly) { "software" } else { "android" }
     & $py @pyArgs "$Root\host\orchestrator.py" --check-only --backend $be
     if ($LASTEXITCODE -eq 0) { Ok "orchestrator --check-only passed" } else { Bad "orchestrator --check-only failed" }
+}
+
+if ($Shortcut) {
+    try {
+        $sh = New-Object -ComObject WScript.Shell
+        $lnk = $sh.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "DevRig-HID.lnk"))
+        $lnk.TargetPath = (Join-Path $Root "DevRig-HID.bat")
+        $lnk.WorkingDirectory = $Root
+        $lnk.Description = "DevRig-HID"
+        $lnk.Save()
+        Ok "Desktop shortcut 'DevRig-HID' created"
+    } catch { Warn "could not create the shortcut: $($_.Exception.Message)" }
 }
 
 Write-Host ""
